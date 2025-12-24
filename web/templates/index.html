@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="Smart Document Retrieval System - Advanced spatiotemporal search with Elasticsearch">
+    <title>Smart Document Retrieval System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+
+<body>
+    <!-- Header -->
+    <header>
+        <div class="header-content">
+            <div class="logo">
+                <div class="logo-icon">🔍</div>
+                <h1>Smart Document Retrieval</h1>
+            </div>
+            <div class="header-stats">
+                <div class="stat-item">
+                    <div class="stat-value" id="total-docs">0</div>
+                    <div class="stat-label">Documents</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="total-locations">0</div>
+                    <div class="stat-label">Locations</div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="container">
+        <!-- Search Section -->
+        <section class="search-section">
+            <h2 class="search-title">Search Documents</h2>
+
+            <div class="search-box">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="search-input" class="search-input"
+                    placeholder="Start typing to search (min 3 characters for autocomplete)..." autocomplete="off">
+                <div class="autocomplete-results" id="autocomplete-results"></div>
+            </div>
+
+            <div class="filters-grid">
+                <div class="filter-group">
+                    <label class="filter-label">Date From</label>
+                    <input type="date" id="date-from" class="filter-input">
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Date To</label>
+                    <input type="date" id="date-to" class="filter-input">
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Georeference</label>
+                    <input type="text" id="georeference" class="filter-input" placeholder="e.g., New York">
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label">Temporal Expression</label>
+                    <input type="text" id="temporal-expr" class="filter-input" placeholder="e.g., 2023">
+                </div>
+                <div class="filter-group" style="grid-column: span 2;">
+                    <label class="filter-label">Search Balance: <span id="weight-label">Mix (0.5)</span></label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 0.8rem; color: #94a3b8;">Lexical (BM25)</span>
+                        <input type="range" id="semantic-weight" min="0" max="1" step="0.1" value="0.5" style="flex: 1;"
+                            oninput="document.getElementById('weight-label').textContent = this.value == 0 ? 'Lexical Only' : (this.value == 1 ? 'Semantic Only' : 'Mix (' + this.value + ')')">
+                        <span style="font-size: 0.8rem; color: #94a3b8;">Semantic (Vector)</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button class="btn btn-primary" onclick="performSearch()">
+                    <span>🔍</span>
+                    Search
+                </button>
+                <button class="btn btn-secondary" onclick="clearFilters()">
+                    <span>✖</span>
+                    Clear
+                </button>
+                <button class="btn btn-secondary" onclick="indexSampleDocuments()">
+                    <span>📄</span>
+                    Index Sample Docs
+                </button>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section class="results-section" id="results-section" style="display: none;">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <span>📚</span>
+                    Search Results
+                </h2>
+                <span class="results-count" id="results-count">0 results</span>
+            </div>
+            <div class="results-grid" id="results-grid"></div>
+        </section>
+
+        <!-- Analytics Section -->
+        <section class="analytics-section">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <span>📊</span>
+                    Analytics Dashboard
+                </h2>
+            </div>
+
+            <div class="analytics-grid">
+                <!-- Top Georeferences -->
+                <div class="analytics-card">
+                    <h3 class="analytics-title">
+                        <span>🌍</span>
+                        Top Georeferences
+                    </h3>
+                    <div class="geo-list" id="geo-list">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Document Distribution Over Time -->
+                <div class="analytics-card">
+                    <h3 class="analytics-title">
+                        <span>📈</span>
+                        Document Distribution
+                    </h3>
+                    <div class="chart-container">
+                        <canvas id="distribution-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        // Global variables
+        let autocompleteTimeout;
+        let distributionChart;
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function () {
+            loadIndexStats();
+            loadTopGeoreferences();
+            loadDocumentDistribution();
+            setupEventListeners();
+        });
+
+        // Setup event listeners
+        function setupEventListeners() {
+            const searchInput = document.getElementById('search-input');
+
+            searchInput.addEventListener('input', function (e) {
+                clearTimeout(autocompleteTimeout);
+                const query = e.target.value;
+
+                if (query.length >= 3) {
+                    autocompleteTimeout = setTimeout(() => {
+                        fetchAutocomplete(query);
+                    }, 300);
+                } else {
+                    hideAutocomplete();
+                }
+            });
+
+            searchInput.addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') {
+                    performSearch();
+                }
+            });
+
+            // Hide autocomplete when clicking outside
+            document.addEventListener('click', function (e) {
+                if (!e.target.closest('.search-box')) {
+                    hideAutocomplete();
+                }
+            });
+        }
+
+        // Load index statistics
+        async function loadIndexStats() {
+            try {
+                const response = await fetch('/api/analytics/overview');
+                const data = await response.json();
+
+                document.getElementById('total-docs').textContent = data.total_documents || 0;
+                document.getElementById('total-locations').textContent = data.unique_georeferences || 0;
+            } catch (error) {
+                console.error('Error loading index stats:', error);
+            }
+        }
+
+        // Fetch autocomplete suggestions
+        async function fetchAutocomplete(query) {
+            try {
+                const response = await fetch(`/api/autocomplete?q=${encodeURIComponent(query)}`);
+                const results = await response.json();
+                displayAutocomplete(results);
+            } catch (error) {
+                console.error('Error fetching autocomplete:', error);
+            }
+        }
+
+        // Display autocomplete results
+        function displayAutocomplete(results) {
+            const container = document.getElementById('autocomplete-results');
+
+            if (results.length === 0) {
+                hideAutocomplete();
+                return;
+            }
+
+            container.innerHTML = results.map(result => `
+                <div class="autocomplete-item" onclick="selectAutocomplete('${result.title.replace(/'/g, "\\'")}')">
+                    <div class="autocomplete-title">${result.title}</div>
+                    <div class="autocomplete-meta">
+                        ${result.date ? new Date(result.date).toLocaleDateString() : 'No date'} • 
+                        ${result.authors && result.authors.length > 0 ? result.authors.map(a => `${a.first_name} ${a.last_name}`).join(', ') : 'No authors'}
+                    </div>
+                </div>
+            `).join('');
+
+            container.classList.add('active');
+        }
+
+        // Select autocomplete item
+        function selectAutocomplete(title) {
+            document.getElementById('search-input').value = title;
+            hideAutocomplete();
+            performSearch();
+        }
+
+        // Hide autocomplete
+        function hideAutocomplete() {
+            document.getElementById('autocomplete-results').classList.remove('active');
+        }
+
+        // Perform search
+        async function performSearch() {
+            const query = document.getElementById('search-input').value;
+            const dateFrom = document.getElementById('date-from').value;
+            const dateTo = document.getElementById('date-to').value;
+            const georeference = document.getElementById('georeference').value;
+            const temporalExpr = document.getElementById('temporal-expr').value;
+            const semanticWeight = parseFloat(document.getElementById('semantic-weight').value);
+
+            if (!query && !dateFrom && !dateTo && !georeference && !temporalExpr) {
+                alert('Please enter at least one search criterion');
+                return;
+            }
+
+            const searchData = {
+                query: query,
+                date_from: dateFrom || null,
+                date_to: dateTo || null,
+                georeference: georeference || null,
+                temporal_expression: temporalExpr || null,
+                semantic_weight: semanticWeight,
+                size: 10
+            };
+
+            try {
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(searchData)
+                });
+
+                const results = await response.json();
+                displayResults(results);
+            } catch (error) {
+                console.error('Error performing search:', error);
+                alert('Error performing search. Please try again.');
+            }
+        }
+
+        // Display search results
+        function displayResults(results) {
+            const resultsSection = document.getElementById('results-section');
+            const resultsGrid = document.getElementById('results-grid');
+            const resultsCount = document.getElementById('results-count');
+
+            resultsSection.style.display = 'block';
+            resultsCount.textContent = `${results.length} result${results.length !== 1 ? 's' : ''}`;
+
+            if (results.length === 0) {
+                resultsGrid.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🔍</div>
+                        <div class="empty-title">No results found</div>
+                        <p>Try adjusting your search criteria</p>
+                    </div>
+                `;
+                return;
+            }
+
+            resultsGrid.innerHTML = results.map(result => `
+                <div class="result-card">
+                    <div class="result-header">
+                        <div>
+                            <h3 class="result-title">${result.title}</h3>
+                        </div>
+                        <div class="result-score">Score: ${result.score.toFixed(2)}</div>
+                    </div>
+                    <p class="result-content">${result.content || 'No content available'}</p>
+                    <div class="result-meta">
+                        <div class="meta-item">
+                            <span class="meta-icon">📅</span>
+                            ${result.date ? new Date(result.date).toLocaleDateString() : 'No date'}
+                        </div>
+                        ${result.authors && result.authors.length > 0 ? `
+                            <div class="meta-item">
+                                <span class="meta-icon">👤</span>
+                                ${result.authors.map(a => `${a.first_name} ${a.last_name}`).join(', ')}
+                            </div>
+                        ` : ''}
+                        ${result.distance_km ? `
+                            <div class="meta-item">
+                                <span class="meta-icon">📍</span>
+                                ${result.distance_km.toFixed(2)} km away
+                            </div>
+                        ` : ''}
+                    </div>
+                    ${result.georeferences && result.georeferences.length > 0 ? `
+                        <div class="tag-list">
+                            ${result.georeferences.slice(0, 5).map(geo => `<span class="tag">📍 ${geo}</span>`).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            `).join('');
+
+            // Scroll to results
+            resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        // Clear filters
+        function clearFilters() {
+            document.getElementById('search-input').value = '';
+            document.getElementById('date-from').value = '';
+            document.getElementById('date-to').value = '';
+            document.getElementById('georeference').value = '';
+            document.getElementById('temporal-expr').value = '';
+            document.getElementById('results-section').style.display = 'none';
+        }
+
+        // Load top georeferences
+        async function loadTopGeoreferences() {
+            try {
+                const response = await fetch('/api/analytics/georeferences?size=10');
+                const results = await response.json();
+
+                const container = document.getElementById('geo-list');
+
+                if (results.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-icon">🌍</div>
+                            <p>No georeferences found</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = results.map(item => `
+                    <div class="geo-item">
+                        <span class="geo-name">${item.georeference}</span>
+                        <span class="geo-count">${item.count}</span>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading georeferences:', error);
+            }
+        }
+
+        // Load document distribution
+        async function loadDocumentDistribution() {
+            try {
+                const response = await fetch('/api/analytics/distribution?interval=1d');
+                const results = await response.json();
+
+                if (results.length === 0) {
+                    return;
+                }
+
+                // Prepare chart data
+                const labels = results.map(item => item.date);
+                const data = results.map(item => item.count);
+
+                // Create chart
+                const ctx = document.getElementById('distribution-chart').getContext('2d');
+
+                if (distributionChart) {
+                    distributionChart.destroy();
+                }
+
+                distributionChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Documents',
+                            data: data,
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    color: '#94a3b8'
+                                },
+                                grid: {
+                                    color: 'rgba(148, 163, 184, 0.1)'
+                                }
+                            },
+                            x: {
+                                ticks: {
+                                    color: '#94a3b8',
+                                    maxRotation: 45,
+                                    minRotation: 45
+                                },
+                                grid: {
+                                    color: 'rgba(148, 163, 184, 0.1)'
+                                }
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading distribution:', error);
+            }
+        }
+
+        // Index sample documents
+        async function indexSampleDocuments() {
+            if (!confirm('This will index the sample documents. Continue?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/index/sample', {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(result.message);
+                    // Reload analytics
+                    loadIndexStats();
+                    loadTopGeoreferences();
+                    loadDocumentDistribution();
+                } else {
+                    alert('Error: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error indexing documents:', error);
+                alert('Error indexing documents. Make sure Elasticsearch is running.');
+            }
+        }
+    </script>
+</body>
+
+</html>
