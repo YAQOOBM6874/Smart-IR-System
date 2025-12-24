@@ -4,6 +4,9 @@ A high-performance, intelligent document retrieval system built on the **Reuters
 
 ![Dashboard Preview](C:/Users/yaqoo/.gemini/antigravity/brain/12691ed7-0cc2-482f-8817-b9404c0d4c1b/uploaded_image_1766461823818.png)
 
+## 📺 Project Demo
+[Watch the Demo Video](demo%20video.mp4)
+
 ## 🚀 Key Features
 
 *   **Hybrid Search Engine**: Combines **BM25** (Elasticsearch default) for keyword precision and **kNN** (Vector Search) for semantic understanding.
